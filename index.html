@@ -1,0 +1,195 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <WebSocketsServer.h>
+
+const char* ssid = "ESP32-Remote";       // AP name
+const char* password = "12345678";       // AP password
+
+WebServer server(80);
+WebSocketsServer webSocket = WebSocketsServer(81);
+
+const int pwmPin = 4;
+
+void handleRoot() {
+  server.send(200, "text/html", R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>ESP32 Remote</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background-color: #111;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: sans-serif;
+    }
+    #title-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    #main-ui {
+      display: none;
+      width: 100vw;
+      height: 100vh;
+      position: relative;
+    }
+    #slider {
+      position: absolute;
+      left: 20px;
+      top: 50%;
+      transform: translateY(-50%) rotate(-90deg);
+      height: 200px;
+    }
+    #fullscreen-btn {
+      margin-top: 20px;
+      padding: 10px 20px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    #exit-fullscreen-btn {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      background: transparent;
+      color: white;
+      border: none;
+      font-size: 32px;
+      cursor: pointer;
+      z-index: 1000;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="title-screen">
+    <div style="font-size: 28px;">ESP32 - Remote</div>
+    <div style="font-size: 20px;">Vikash Sahani</div>
+    <button id="fullscreen-btn">Enter Fullscreen</button>
+  </div>
+
+  <div id="main-ui">
+    <input type="range" id="slider" min="0" max="255" value="0" />
+    <button id="exit-fullscreen-btn" aria-label="Exit Fullscreen">&#10005;</button>
+  </div>
+
+  <script>
+    const fullscreenBtn = document.getElementById('fullscreen-btn');
+    const exitFullscreenBtn = document.getElementById('exit-fullscreen-btn');
+    const titleScreen = document.getElementById('title-screen');
+    const mainUI = document.getElementById('main-ui');
+    const slider = document.getElementById('slider');
+
+    let socket;
+
+    function openFullscreen() {
+      const docElm = document.documentElement;
+      if (docElm.requestFullscreen) {
+        docElm.requestFullscreen();
+      } else if (docElm.mozRequestFullScreen) {
+        docElm.mozRequestFullScreen();
+      } else if (docElm.webkitRequestFullscreen) {
+        docElm.webkitRequestFullscreen();
+      } else if (docElm.msRequestFullscreen) {
+        docElm.msRequestFullscreen();
+      }
+    }
+
+    function exitFullscreen() {
+      if (document.exitFullscreen) {
+        document.exitFullscreen();
+      } else if (document.mozCancelFullScreen) {
+        document.mozCancelFullScreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      } else if (document.msExitFullscreen) {
+        document.msExitFullscreen();
+      }
+    }
+
+    fullscreenBtn.addEventListener('click', () => {
+      openFullscreen();
+      titleScreen.style.display = 'none';
+      mainUI.style.display = 'block';
+    });
+
+    exitFullscreenBtn.addEventListener('click', () => {
+      exitFullscreen();
+    });
+
+    document.addEventListener('fullscreenchange', () => {
+      const isFs = !!document.fullscreenElement;
+      exitFullscreenBtn.style.display = isFs ? 'block' : 'none';
+    });
+
+    // WebSocket
+    window.addEventListener('load', () => {
+      socket = new WebSocket(`ws://${window.location.hostname}:81`);
+      socket.onopen = () => console.log("WebSocket connected");
+      socket.onmessage = e => console.log("Received:", e.data);
+      socket.onclose = () => console.log("WebSocket disconnected");
+
+      slider.addEventListener('input', () => {
+        const val = slider.value;
+        socket.send(val);
+      });
+    });
+  </script>
+</body>
+</html>
+)rawliteral");
+}
+
+void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length) {
+  String msg = "";
+  for (size_t i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+  int pwmVal = msg.toInt();
+  ledcWrite(0, pwmVal);  // Write PWM value
+}
+
+void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+  if (type == WStype_TEXT) {
+    handleWebSocketMessage(num, payload, length);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Start WiFi AP
+  WiFi.softAP(ssid, password);
+  Serial.println("AP Started");
+  Serial.println(WiFi.softAPIP());
+
+  // Setup PWM on GPIO 4
+  ledcSetup(0, 5000, 8);  // channel 0, 5 kHz, 8-bit
+  ledcAttachPin(pwmPin, 0);
+
+  server.on("/", handleRoot);
+  server.begin();
+
+  webSocket.begin();
+  webSocket.onEvent(onWebSocketEvent);
+}
+
+void loop() {
+  server.handleClient();
+  webSocket.loop();
+}
